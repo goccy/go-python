@@ -1,0 +1,6 @@
+github.com/go-python/gpython v0.2.0 h1:MW7m7pFnbpzHL88vhAdIhT1pgG1QUZ0Q5jcF94z5MBI=
+github.com/go-python/gpython v0.2.0/go.mod h1:fUN4z1X+GFaOwPOoHOAM8MOPnh1NJatWo/cDqGlZDEI=
+github.com/goccy/pythonwasm2go v0.1.0 h1:9+8LZQN5Qbpwkym0Xr28eE/BKnRwTE9FcYtJCl6Qp4g=
+github.com/goccy/pythonwasm2go v0.1.0/go.mod h1:k1fc36gVRk5RpKWGHogTZsBPLNzSAH+9f06c8m6UmBY=
+github.com/google/go-cmp v0.5.8 h1:e6P7q2lk1O+qJJb4BtCQXlK8vWEO8V1ZeuEdJNOqZyg=
+github.com/google/go-cmp v0.5.8/go.mod h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=
