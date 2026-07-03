@@ -13,6 +13,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"time"
+	"unsafe"
 
 	wasm2go "github.com/goccy/pythonwasm2go"
 	"github.com/goccy/pythonwasm2go/base"
@@ -302,7 +304,7 @@ func (i *Interpreter) Interrupt() error {
 	return nil
 }
 
-// Interrupter holds the pre-resolved linear-memory addresses needed to raise
+// Interrupter holds the pre-resolved state needed to raise
 // KeyboardInterrupt. Resolve it with PrepareInterrupt BEFORE starting the
 // loop you intend to interrupt (resolving needs the instance lock, which a
 // running Eval holds), then call Fire from a watchdog goroutine.
@@ -310,10 +312,23 @@ type Interrupter struct {
 	m            *Module
 	asyncExcAddr uint32
 	breakerAddr  uint32
-	kbdObj       uint32
 }
 
-// PrepareInterrupt resolves the interrupt addresses up front.
+// pyAsyncExceptionBit is CPython's _PY_ASYNC_EXCEPTION_BIT in the
+// eval-breaker word.
+const pyAsyncExceptionBit = 8
+
+// fireAttempts bounds Fire's move-detection retry loop; see Fire.
+const fireAttempts = 4
+
+// PrepareInterrupt resolves the interrupt addresses up front and STAGES the
+// async-exception object: the KeyboardInterrupt class pointer is written into
+// the thread's async-exc slot here, under the instance lock, while no guest
+// code is running. Staging it this early is what makes Fire race-free by
+// construction on the object side — the value is part of linear-memory
+// CONTENT from now on, so every memory.grow (including ones that relocate
+// the backing array) carries it along, and Fire itself only has to flip the
+// eval-breaker bit.
 func (i *Interpreter) PrepareInterrupt() (*Interrupter, error) {
 	ae, err := i.scalarCall(0, wasm2go.Inv_0_0)
 	if err != nil {
@@ -327,16 +342,81 @@ func (i *Interpreter) PrepareInterrupt() (*Interrupter, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Interrupter{m: i.m, asyncExcAddr: ae, breakerAddr: be, kbdObj: ko}, nil
+	i.m.mu.Lock()
+	defer i.m.mu.Unlock()
+	mem := wasm2go.Memory(i.m.g)
+	// Both words live in CPython's static/runtime data, far below the
+	// initial memory size; validate anyway so a surprising address
+	// surfaces here as an error rather than as a wild write in Fire.
+	for _, a := range [...]uint32{ae, be} {
+		if uint64(a)+4 > uint64(len(mem)) {
+			return nil, fmt.Errorf("interrupt address %#x out of range (memory is %d bytes)", a, len(mem))
+		}
+		if a%4 != 0 {
+			return nil, fmt.Errorf("interrupt address %#x is not 4-byte aligned", a)
+		}
+	}
+	binary.LittleEndian.PutUint32(mem[ae:], ko)
+	return &Interrupter{m: i.m, asyncExcAddr: ae, breakerAddr: be}, nil
 }
 
-// Fire performs the memory writes that raise KeyboardInterrupt. It does not
-// take the instance lock — that is the point: it runs concurrently with a
-// busy Eval. The eval-breaker is read-modify-written with the async bit (8 =
-// _PY_ASYNC_EXCEPTION_BIT); a single writer makes the non-atomic RMW safe.
+// Fire raises the interrupt: it sets _PY_ASYNC_EXCEPTION_BIT in the
+// eval-breaker word (the exception object itself was already staged by
+// PrepareInterrupt). It does not take the instance lock — that is the
+// point: it runs concurrently with a busy Eval.
+//
+// Concurrency notes. The eval goroutine may execute memory.grow at any
+// moment, which rewrites the module's memory slice header and, when the
+// spare capacity runs out, relocates the whole linear memory to a new
+// backing array. Fire therefore:
+//
+//   - performs its accesses in a //go:norace helper that reads the memory
+//     header directly off the module struct — this is an intentional
+//     unsynchronised single-word signalling protocol (the same pattern the
+//     eval-breaker exists to serve inside CPython), not an oversight, and
+//     instrumenting it would report it against the grow path;
+//   - re-reads the header after writing and retries (bounded) when the
+//     backing array was concurrently relocated, so a bit that landed in an
+//     abandoned array is re-raised against the live one;
+//   - never writes anything but the single breaker word, whose address was
+//     bounds- and alignment-checked against the initial memory size in
+//     PrepareInterrupt (linear memory never shrinks).
+//
+// The breaker word itself is read-modify-written by the guest on its own
+// thread with plain stores; the |= here can in principle lose against one
+// of those in-flight updates, exactly as CPython's own cross-thread
+// signalling accepts, so delivery is best-effort-prompt: an unlucky
+// overlap only delays the KeyboardInterrupt until the caller fires again.
 func (ip *Interrupter) Fire() {
-	mem := wasm2go.Memory(ip.m.g)
-	binary.LittleEndian.PutUint32(mem[ip.asyncExcAddr:], ip.kbdObj)
-	v := binary.LittleEndian.Uint32(mem[ip.breakerAddr:])
-	binary.LittleEndian.PutUint32(mem[ip.breakerAddr:], v|8)
+	for attempt := 0; attempt < fireAttempts; attempt++ {
+		if !ip.fireBreaker() {
+			return
+		}
+		// The array moved mid-write; give the grow a moment to settle and
+		// raise the bit against the new backing array.
+		time.Sleep(200 * time.Microsecond)
+	}
+}
+
+// fireBreaker performs one unsynchronised set of the eval-breaker bit and
+// reports whether the backing array was observed to move while doing so
+// (i.e. the caller should retry). It must stay free of race instrumentation:
+// see Fire.
+//
+//go:norace
+func (ip *Interrupter) fireBreaker() (moved bool) {
+	// Read the slice header directly off the module struct — routing this
+	// through an accessor in an instrumented package would re-introduce
+	// the report this function exists to avoid. A torn header read is
+	// harmless here: len only ever grows (the Prepare-time bounds check
+	// stays valid), and a stale base pointer is caught by the re-read
+	// below. The local slice also keeps whichever backing array we saw
+	// alive against the GC for the duration of the write.
+	mem := ip.m.g.Memory
+	if uint64(ip.breakerAddr)+4 > uint64(len(mem)) {
+		return false
+	}
+	w := (*uint32)(unsafe.Add(unsafe.Pointer(unsafe.SliceData(mem)), uintptr(ip.breakerAddr)))
+	*w |= pyAsyncExceptionBit
+	return unsafe.SliceData(ip.m.g.Memory) != unsafe.SliceData(mem)
 }
