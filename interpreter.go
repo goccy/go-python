@@ -13,8 +13,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"time"
-	"unsafe"
 
 	wasm2go "github.com/goccy/pythonwasm2go"
 	"github.com/goccy/pythonwasm2go/base"
@@ -318,17 +316,13 @@ type Interrupter struct {
 // eval-breaker word.
 const pyAsyncExceptionBit = 8
 
-// fireAttempts bounds Fire's move-detection retry loop; see Fire.
-const fireAttempts = 4
-
 // PrepareInterrupt resolves the interrupt addresses up front and STAGES the
 // async-exception object: the KeyboardInterrupt class pointer is written into
-// the thread's async-exc slot here, under the instance lock, while no guest
-// code is running. Staging it this early is what makes Fire race-free by
-// construction on the object side — the value is part of linear-memory
-// CONTENT from now on, so every memory.grow (including ones that relocate
-// the backing array) carries it along, and Fire itself only has to flip the
-// eval-breaker bit.
+// the thread's async-exc slot here, before the loop starts. From then on the
+// value is linear-memory CONTENT — every memory.grow (including ones that
+// relocate the backing array) copies it along — so Fire only has to flip the
+// eval-breaker bit, and the object is globally visible long before the bit
+// can be (no cross-CPU store-ordering concern on arm64).
 func (i *Interpreter) PrepareInterrupt() (*Interrupter, error) {
 	ae, err := i.scalarCall(0, wasm2go.Inv_0_0)
 	if err != nil {
@@ -342,21 +336,22 @@ func (i *Interpreter) PrepareInterrupt() (*Interrupter, error) {
 	if err != nil {
 		return nil, err
 	}
-	i.m.mu.Lock()
-	defer i.m.mu.Unlock()
-	mem := wasm2go.Memory(i.m.g)
-	// Both words live in CPython's static/runtime data, far below the
-	// initial memory size; validate anyway so a surprising address
-	// surfaces here as an error rather than as a wild write in Fire.
-	for _, a := range [...]uint32{ae, be} {
-		if uint64(a)+4 > uint64(len(mem)) {
-			return nil, fmt.Errorf("interrupt address %#x out of range (memory is %d bytes)", a, len(mem))
+	var addrErr error
+	base.AccessMemory(i.m.g, func(mem []byte) {
+		// Both words live in CPython's static/runtime data, far below the
+		// initial memory size; validate anyway so a surprising address
+		// surfaces here as an error rather than as a wild write in Fire.
+		for _, a := range [...]uint32{ae, be} {
+			if uint64(a)+4 > uint64(len(mem)) {
+				addrErr = fmt.Errorf("interrupt address %#x out of range (memory is %d bytes)", a, len(mem))
+				return
+			}
 		}
-		if a%4 != 0 {
-			return nil, fmt.Errorf("interrupt address %#x is not 4-byte aligned", a)
-		}
+		binary.LittleEndian.PutUint32(mem[ae:], ko)
+	})
+	if addrErr != nil {
+		return nil, addrErr
 	}
-	binary.LittleEndian.PutUint32(mem[ae:], ko)
 	return &Interrupter{m: i.m, asyncExcAddr: ae, breakerAddr: be}, nil
 }
 
@@ -365,58 +360,21 @@ func (i *Interpreter) PrepareInterrupt() (*Interrupter, error) {
 // PrepareInterrupt). It does not take the instance lock — that is the
 // point: it runs concurrently with a busy Eval.
 //
-// Concurrency notes. The eval goroutine may execute memory.grow at any
-// moment, which rewrites the module's memory slice header and, when the
-// spare capacity runs out, relocates the whole linear memory to a new
-// backing array. Fire therefore:
-//
-//   - performs its accesses in a //go:norace helper that reads the memory
-//     header directly off the module struct — this is an intentional
-//     unsynchronised single-word signalling protocol (the same pattern the
-//     eval-breaker exists to serve inside CPython), not an oversight, and
-//     instrumenting it would report it against the grow path;
-//   - re-reads the header after writing and retries (bounded) when the
-//     backing array was concurrently relocated, so a bit that landed in an
-//     abandoned array is re-raised against the live one;
-//   - never writes anything but the single breaker word, whose address was
-//     bounds- and alignment-checked against the initial memory size in
-//     PrepareInterrupt (linear memory never shrinks).
+// The write happens inside base.AccessMemory, which holds the same lock
+// the runtime's memory.grow takes to mutate the memory slice header or
+// relocate its backing array. That makes delivery deterministic: for the
+// duration of the write the memory can neither be resliced nor relocated,
+// so the bit lands in the array the guest observes — no snapshots, no
+// retries, no polling. The only wait is bounded by an in-flight grow.
 //
 // The breaker word itself is read-modify-written by the guest on its own
-// thread with plain stores; the |= here can in principle lose against one
-// of those in-flight updates, exactly as CPython's own cross-thread
-// signalling accepts, so delivery is best-effort-prompt: an unlucky
-// overlap only delays the KeyboardInterrupt until the caller fires again.
+// goroutine with plain single-word accesses — that unsynchronised word is
+// the eval-breaker protocol CPython defines, and the guest re-asserts its
+// own bits on every pass, so the |= below is exactly as strong as
+// CPython's native cross-thread signalling.
 func (ip *Interrupter) Fire() {
-	for attempt := 0; attempt < fireAttempts; attempt++ {
-		if !ip.fireBreaker() {
-			return
-		}
-		// The array moved mid-write; give the grow a moment to settle and
-		// raise the bit against the new backing array.
-		time.Sleep(200 * time.Microsecond)
-	}
-}
-
-// fireBreaker performs one unsynchronised set of the eval-breaker bit and
-// reports whether the backing array was observed to move while doing so
-// (i.e. the caller should retry). It must stay free of race instrumentation:
-// see Fire.
-//
-//go:norace
-func (ip *Interrupter) fireBreaker() (moved bool) {
-	// Read the slice header directly off the module struct — routing this
-	// through an accessor in an instrumented package would re-introduce
-	// the report this function exists to avoid. A torn header read is
-	// harmless here: len only ever grows (the Prepare-time bounds check
-	// stays valid), and a stale base pointer is caught by the re-read
-	// below. The local slice also keeps whichever backing array we saw
-	// alive against the GC for the duration of the write.
-	mem := ip.m.g.Memory
-	if uint64(ip.breakerAddr)+4 > uint64(len(mem)) {
-		return false
-	}
-	w := (*uint32)(unsafe.Add(unsafe.Pointer(unsafe.SliceData(mem)), uintptr(ip.breakerAddr)))
-	*w |= pyAsyncExceptionBit
-	return unsafe.SliceData(ip.m.g.Memory) != unsafe.SliceData(mem)
+	base.AccessMemory(ip.m.g, func(mem []byte) {
+		v := binary.LittleEndian.Uint32(mem[ip.breakerAddr:])
+		binary.LittleEndian.PutUint32(mem[ip.breakerAddr:], v|pyAsyncExceptionBit)
+	})
 }
