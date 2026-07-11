@@ -232,18 +232,21 @@ go test -bench . -benchmem ./...
 go test -run TestMemoryFootprint -v ./...
 ```
 
-Execution speed tracks the wasm2go-transpiled engine, so it improves as the
-upstream bundle is refreshed. Moving from `pythonwasm2go` v0.1.0 (python-wasm
-v0.1.2) to v0.2.0 (python-wasm v0.1.5, wasm2go v0.4.4) cut CPU time on the
-`bench/` workloads substantially, at unchanged allocation counts
-(`benchstat`, `sec/op`, darwin/amd64, n=10):
+The `bench/` module runs identical Python source on go-python (real CPython
+3.14.6) and on [`gpython`](https://github.com/go-python/gpython) (a pure-Go
+Python 3.4 VM), so the two are measured on equal footing (`benchstat` `sec/op`,
+darwin/amd64, n=10):
 
-| workload | v0.1.0 | v0.2.0 | change |
-| --- | ---: | ---: | ---: |
-| `fib(28)` (recursive calls) | 444.7 ms | 123.3 ms | **−72.3 %** |
-| `sum(range(200000))` (loop) | 94.0 ms | 53.8 ms | **−42.8 %** |
-| interpreter startup | 15.3 ms | 13.4 ms | −12.4 % |
-| geomean | 86.1 ms | 44.6 ms | **−48.2 %** |
+| workload | go-python | gpython |
+| --- | ---: | ---: |
+| `fib(28)` (recursive calls) | 122.8 ms | 217.8 ms |
+| `sum(range(200000))` (loop) | 54.1 ms | 17.1 ms |
+| interpreter startup | 13.2 ms | 16 µs |
+
+The two make different trade-offs: go-python runs a real CPython engine, so it
+is faster on call-heavy code and keeps per-call allocation tiny (≈0.5 KB/op vs
+gpython's hundreds of MB for `fib`), while gpython's lightweight VM starts up
+and runs tight loops faster.
 
 ## License
 
