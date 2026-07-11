@@ -3,7 +3,8 @@
 [![CI](https://github.com/goccy/go-python/actions/workflows/ci.yml/badge.svg)](https://github.com/goccy/go-python/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/goccy/go-python.svg)](https://pkg.go.dev/github.com/goccy/go-python)
 
-Pure-Go CPython for Go applications.
+**CPython in pure Go — embed and run Python anywhere Go runs. No cgo, no native
+Python install, one static binary.**
 
 `go-python` runs CPython compiled to WebAssembly and transpiled to Go by
 [`goccy/pythonwasm2go`](https://github.com/goccy/pythonwasm2go). It gives Go
@@ -250,4 +251,37 @@ and runs tight loops faster.
 
 ## License
 
-[MIT](LICENSE).
+- **The Go source code of this repository is licensed under [MIT](./LICENSE).**
+  That covers everything written or generated here — `interpreter.go`, the
+  generated bridge `python.go`, the CLI, the tests and the benchmarks.
+- **`stdlib.zip` is not MIT**: it is a repackaged subset of the CPython 3.14.6
+  standard library — a derivative work of
+  [CPython](https://github.com/python/cpython) — and keeps CPython's own
+  license, the Python Software Foundation License Agreement
+  ([`LICENSE-PSF`](./LICENSE-PSF)), vendored verbatim. CPython is
+  Copyright (c) 2001-present Python Software Foundation; All Rights Reserved.
+- The [`pythonwasm2go`](https://github.com/goccy/pythonwasm2go) dependency (the
+  transpiled interpreter) is likewise distributed under CPython's license in its
+  own repository.
+
+### Using go-python in your own project
+
+- **As a library dependency** (source distribution): your repository contains no
+  CPython-derived bytes — only an import path and a go.mod entry. License your
+  own code however you like (MIT, proprietary, ...); no CPython license text
+  needs to accompany it. Your users receive go-python and pythonwasm2go from
+  their own origins, under their own licenses.
+- **Shipping a compiled binary**: the binary embeds the transpiled interpreter
+  and `stdlib.zip`. The PSF License Agreement is permissive and expressly allows
+  this — it grants the right to "reproduce, analyze, test, perform and/or
+  display publicly, prepare derivative works, distribute, and otherwise use
+  Python ... in any derivative version" (§2), including in commercial and
+  closed-source products, with no copyleft. Your own code keeps its own license
+  and does not inherit CPython's. The only condition is attribution: retain
+  CPython's copyright notice and PSF's license — shipping [`LICENSE-PSF`](./LICENSE-PSF)
+  (or a third-party-notices entry pointing at it) alongside your binary
+  satisfies it. **So redistribution, including inside a proprietary product, is
+  fine.**
+- **Python code you run** on the interpreter, and its output, remain yours.
+
+This summary is not legal advice; the license texts govern.
