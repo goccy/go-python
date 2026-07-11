@@ -78,8 +78,9 @@ before the guest reaches host resources.
 ## Status
 
 The checked-in upstream artifacts currently track
-[`goccy/python-wasm`](https://github.com/goccy/python-wasm) `v0.1.2`. The
-WASI verification path in this repository exercises CPython 3.14.6.
+[`goccy/python-wasm`](https://github.com/goccy/python-wasm) `v0.1.5`
+(vendored as [`goccy/pythonwasm2go`](https://github.com/goccy/pythonwasm2go)
+`v0.2.0`), which builds CPython 3.14.6.
 
 The main API supports expression / statement evaluation, persistent globals per
 interpreter, standard-library imports, stdout/stderr capture, isolated
@@ -230,6 +231,19 @@ cd bench
 go test -bench . -benchmem ./...
 go test -run TestMemoryFootprint -v ./...
 ```
+
+Execution speed tracks the wasm2go-transpiled engine, so it improves as the
+upstream bundle is refreshed. Moving from `pythonwasm2go` v0.1.0 (python-wasm
+v0.1.2) to v0.2.0 (python-wasm v0.1.5, wasm2go v0.4.4) cut CPU time on the
+`bench/` workloads substantially, at unchanged allocation counts
+(`benchstat`, `sec/op`, darwin/amd64, n=10):
+
+| workload | v0.1.0 | v0.2.0 | change |
+| --- | ---: | ---: | ---: |
+| `fib(28)` (recursive calls) | 444.7 ms | 123.3 ms | **−72.3 %** |
+| `sum(range(200000))` (loop) | 94.0 ms | 53.8 ms | **−42.8 %** |
+| interpreter startup | 15.3 ms | 13.4 ms | −12.4 % |
+| geomean | 86.1 ms | 44.6 ms | **−48.2 %** |
 
 ## License
 
