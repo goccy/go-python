@@ -302,7 +302,7 @@ func (i *Interpreter) Interrupt() error {
 	return nil
 }
 
-// Interrupter holds the pre-resolved linear-memory addresses needed to raise
+// Interrupter holds the pre-resolved state needed to raise
 // KeyboardInterrupt. Resolve it with PrepareInterrupt BEFORE starting the
 // loop you intend to interrupt (resolving needs the instance lock, which a
 // running Eval holds), then call Fire from a watchdog goroutine.
@@ -310,10 +310,19 @@ type Interrupter struct {
 	m            *Module
 	asyncExcAddr uint32
 	breakerAddr  uint32
-	kbdObj       uint32
 }
 
-// PrepareInterrupt resolves the interrupt addresses up front.
+// pyAsyncExceptionBit is CPython's _PY_ASYNC_EXCEPTION_BIT in the
+// eval-breaker word.
+const pyAsyncExceptionBit = 8
+
+// PrepareInterrupt resolves the interrupt addresses up front and STAGES the
+// async-exception object: the KeyboardInterrupt class pointer is written into
+// the thread's async-exc slot here, before the loop starts. From then on the
+// value is linear-memory CONTENT — every memory.grow (including ones that
+// relocate the backing array) copies it along — so Fire only has to flip the
+// eval-breaker bit, and the object is globally visible long before the bit
+// can be (no cross-CPU store-ordering concern on arm64).
 func (i *Interpreter) PrepareInterrupt() (*Interrupter, error) {
 	ae, err := i.scalarCall(0, wasm2go.Inv_0_0)
 	if err != nil {
@@ -327,16 +336,45 @@ func (i *Interpreter) PrepareInterrupt() (*Interrupter, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Interrupter{m: i.m, asyncExcAddr: ae, breakerAddr: be, kbdObj: ko}, nil
+	var addrErr error
+	base.AccessMemory(i.m.g, func(mem []byte) {
+		// Both words live in CPython's static/runtime data, far below the
+		// initial memory size; validate anyway so a surprising address
+		// surfaces here as an error rather than as a wild write in Fire.
+		for _, a := range [...]uint32{ae, be} {
+			if uint64(a)+4 > uint64(len(mem)) {
+				addrErr = fmt.Errorf("interrupt address %#x out of range (memory is %d bytes)", a, len(mem))
+				return
+			}
+		}
+		binary.LittleEndian.PutUint32(mem[ae:], ko)
+	})
+	if addrErr != nil {
+		return nil, addrErr
+	}
+	return &Interrupter{m: i.m, asyncExcAddr: ae, breakerAddr: be}, nil
 }
 
-// Fire performs the memory writes that raise KeyboardInterrupt. It does not
-// take the instance lock — that is the point: it runs concurrently with a
-// busy Eval. The eval-breaker is read-modify-written with the async bit (8 =
-// _PY_ASYNC_EXCEPTION_BIT); a single writer makes the non-atomic RMW safe.
+// Fire raises the interrupt: it sets _PY_ASYNC_EXCEPTION_BIT in the
+// eval-breaker word (the exception object itself was already staged by
+// PrepareInterrupt). It does not take the instance lock — that is the
+// point: it runs concurrently with a busy Eval.
+//
+// The write happens inside base.AccessMemory, which holds the same lock
+// the runtime's memory.grow takes to mutate the memory slice header or
+// relocate its backing array. That makes delivery deterministic: for the
+// duration of the write the memory can neither be resliced nor relocated,
+// so the bit lands in the array the guest observes — no snapshots, no
+// retries, no polling. The only wait is bounded by an in-flight grow.
+//
+// The breaker word itself is read-modify-written by the guest on its own
+// goroutine with plain single-word accesses — that unsynchronised word is
+// the eval-breaker protocol CPython defines, and the guest re-asserts its
+// own bits on every pass, so the |= below is exactly as strong as
+// CPython's native cross-thread signalling.
 func (ip *Interrupter) Fire() {
-	mem := wasm2go.Memory(ip.m.g)
-	binary.LittleEndian.PutUint32(mem[ip.asyncExcAddr:], ip.kbdObj)
-	v := binary.LittleEndian.Uint32(mem[ip.breakerAddr:])
-	binary.LittleEndian.PutUint32(mem[ip.breakerAddr:], v|8)
+	base.AccessMemory(ip.m.g, func(mem []byte) {
+		v := binary.LittleEndian.Uint32(mem[ip.breakerAddr:])
+		binary.LittleEndian.PutUint32(mem[ip.breakerAddr:], v|pyAsyncExceptionBit)
+	})
 }
