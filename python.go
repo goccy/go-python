@@ -33,6 +33,29 @@ var (
 	_ *base.Module
 )
 
+// pbNewBuf returns the scratch buffer every request marshal starts
+// from. Starting from a presized slice instead of nil removes the
+// append growth ladder (nil→8→16→… reallocations plus copies) that
+// made runtime.growslice-under-pbAppendVarint 90% of one hot
+// consumer's slice-growth profile; 64 bytes covers the dominant
+// single-handle request shape (≤ 13 bytes) and small argument
+// messages in one allocation. A sync.Pool variant was measured and
+// REJECTED: the per-call Get/Put traffic and the pointer box each
+// Put allocates cost more time than the saved reallocations
+// (isolated A/B on googlesqlite's window suite: allocs/op −15% but
+// sec/op +1.5%, B/op +4.8%).
+func pbNewBuf() []byte { return make([]byte, 0, 64) }
+
+// pbVarintLen reports the encoded size of v without writing it.
+func pbVarintLen(v uint64) int {
+	n := 1
+	for v >= 0x80 {
+		v >>= 7
+		n++
+	}
+	return n
+}
+
 // pbAppendVarint appends a varint-encoded uint64.
 func pbAppendVarint(buf []byte, v uint64) []byte {
 	for v >= 0x80 {
@@ -103,8 +126,17 @@ func pbAppendSubmessage(buf []byte, field uint32, sub []byte) []byte {
 }
 
 func pbAppendHandle(buf []byte, field uint32, ptr uint64) []byte {
-	sub := pbAppendUint64(nil, 1, ptr)
-	return pbAppendSubmessage(buf, field, sub)
+	// The submessage has a fixed shape — tag(1,varint) + varint(ptr),
+	// ≤ 11 bytes — so its length is computable up front and the
+	// whole thing can be written straight into buf. The previous
+	// shape built the inner bytes in a fresh slice per call
+	// (`pbAppendUint64(nil, …)`), one heap allocation per handle
+	// field on every bridge call.
+	inner := 1 + pbVarintLen(ptr)
+	buf = pbAppendTag(buf, field, 2)
+	buf = pbAppendVarint(buf, uint64(inner))
+	buf = append(buf, 0x08) // field 1, wire type varint
+	return pbAppendVarint(buf, ptr)
 }
 
 // pbAppendHandlePtr is the nil-safe one-line wrapper around
@@ -579,7 +611,7 @@ func (m *Module) invoke(serviceID, methodID int32, req []byte, call func(*base.M
 // resolveTypeName calls the C++ bridge to get the runtime type name of
 // the object at ptr. Returns a fully qualified C++ class name.
 func (m *Module) resolveTypeName(ptr uint64) (string, error) {
-	buf := pbAppendUint64(nil, 1, ptr)
+	buf := pbAppendUint64(pbNewBuf(), 1, ptr)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	reqPtr := wasm2go.WasmAlloc(m.g, int32(len(buf)))
@@ -626,10 +658,53 @@ func invokeMethod(svc, mid int32, req []byte, call func(*base.Module, int32, int
 // generator (generateEnvStubs) since the import set is module-specific.
 type envStubs struct{ m *Module }
 
-func (h envStubs) Dlerror(m *base.Module) int32                    { return 0 }
-func (h envStubs) Dlopen(m *base.Module, l0 int32, l1 int32) int32 { return 0 }
-func (h envStubs) Dlsym(m *base.Module, l0 int32, l1 int32) int32  { return 0 }
-func (h envStubs) Getpid(m *base.Module) int32                     { return 0 }
+func (h envStubs) Dlerror(m *base.Module) int32                                     { return 0 }
+func (h envStubs) Dlopen(m *base.Module, l0 int32, l1 int32) int32                  { return 0 }
+func (h envStubs) Dlsym(m *base.Module, l0 int32, l1 int32) int32                   { return 0 }
+func (h envStubs) Getpid(m *base.Module) int32                                      { return 0 }
+func (h envStubs) Mpd_getclamp(m *base.Module, l0 int32) int32                      { return 0 }
+func (h envStubs) Mpd_getemax(m *base.Module, l0 int32) int32                       { return 0 }
+func (h envStubs) Mpd_getemin(m *base.Module, l0 int32) int32                       { return 0 }
+func (h envStubs) Mpd_getprec(m *base.Module, l0 int32) int32                       { return 0 }
+func (h envStubs) Mpd_getround(m *base.Module, l0 int32) int32                      { return 0 }
+func (h envStubs) Mpd_ieee_context(m *base.Module, l0 int32, l1 int32) int32        { return 0 }
+func (h envStubs) Mpd_maxcontext(m *base.Module, l0 int32)                          {}
+func (h envStubs) Mpd_qsetclamp(m *base.Module, l0 int32, l1 int32) int32           { return 0 }
+func (h envStubs) Mpd_qsetemax(m *base.Module, l0 int32, l1 int32) int32            { return 0 }
+func (h envStubs) Mpd_qsetemin(m *base.Module, l0 int32, l1 int32) int32            { return 0 }
+func (h envStubs) Mpd_qsetprec(m *base.Module, l0 int32, l1 int32) int32            { return 0 }
+func (h envStubs) Mpd_qsetround(m *base.Module, l0 int32, l1 int32) int32           { return 0 }
+func (h envStubs) Mpd_qsetstatus(m *base.Module, l0 int32, l1 int32) int32          { return 0 }
+func (h envStubs) Mpd_qsettraps(m *base.Module, l0 int32, l1 int32) int32           { return 0 }
+func (h envStubs) Mpd_setminalloc(m *base.Module, l0 int32)                         {}
+func (h envStubs) X_PyTestCapi_Init_Abstract(m *base.Module, l0 int32) int32        { return 0 }
+func (h envStubs) X_PyTestCapi_Init_Buffer(m *base.Module, l0 int32) int32          { return 0 }
+func (h envStubs) X_PyTestCapi_Init_Complex(m *base.Module, l0 int32) int32         { return 0 }
+func (h envStubs) X_PyTestCapi_Init_Config(m *base.Module, l0 int32) int32          { return 0 }
+func (h envStubs) X_PyTestCapi_Init_Exceptions(m *base.Module, l0 int32) int32      { return 0 }
+func (h envStubs) X_PyTestCapi_Init_Frame(m *base.Module, l0 int32) int32           { return 0 }
+func (h envStubs) X_PyTestCapi_Init_GC(m *base.Module, l0 int32) int32              { return 0 }
+func (h envStubs) X_PyTestCapi_Init_GetArgs(m *base.Module, l0 int32) int32         { return 0 }
+func (h envStubs) X_PyTestCapi_Init_Import(m *base.Module, l0 int32) int32          { return 0 }
+func (h envStubs) X_PyTestCapi_Init_Object(m *base.Module, l0 int32) int32          { return 0 }
+func (h envStubs) X_PyTestCapi_Init_Set(m *base.Module, l0 int32) int32             { return 0 }
+func (h envStubs) X_PyTestCapi_Init_Structmember(m *base.Module, l0 int32) int32    { return 0 }
+func (h envStubs) X_PyTestInternalCapi_Init_PyTime(m *base.Module, l0 int32) int32  { return 0 }
+func (h envStubs) X_PyTestLimitedCAPI_Init_Abstract(m *base.Module, l0 int32) int32 { return 0 }
+func (h envStubs) X_PyTestLimitedCAPI_Init_Bytes(m *base.Module, l0 int32) int32    { return 0 }
+func (h envStubs) X_PyTestLimitedCAPI_Init_Codec(m *base.Module, l0 int32) int32    { return 0 }
+func (h envStubs) X_PyTestLimitedCAPI_Init_Complex(m *base.Module, l0 int32) int32  { return 0 }
+func (h envStubs) X_PyTestLimitedCAPI_Init_Dict(m *base.Module, l0 int32) int32     { return 0 }
+func (h envStubs) X_PyTestLimitedCAPI_Init_File(m *base.Module, l0 int32) int32     { return 0 }
+func (h envStubs) X_PyTestLimitedCAPI_Init_Float(m *base.Module, l0 int32) int32    { return 0 }
+func (h envStubs) X_PyTestLimitedCAPI_Init_Import(m *base.Module, l0 int32) int32   { return 0 }
+func (h envStubs) X_PyTestLimitedCAPI_Init_List(m *base.Module, l0 int32) int32     { return 0 }
+func (h envStubs) X_PyTestLimitedCAPI_Init_Long(m *base.Module, l0 int32) int32     { return 0 }
+func (h envStubs) X_PyTestLimitedCAPI_Init_Object(m *base.Module, l0 int32) int32   { return 0 }
+func (h envStubs) X_PyTestLimitedCAPI_Init_Set(m *base.Module, l0 int32) int32      { return 0 }
+func (h envStubs) X_PyTestLimitedCAPI_Init_Tuple(m *base.Module, l0 int32) int32    { return 0 }
+func (h envStubs) X_PyTestLimitedCAPI_Init_Unicode(m *base.Module, l0 int32) int32  { return 0 }
+func (h envStubs) X_PyTestLimitedCAPI_Init_Weakref(m *base.Module, l0 int32) int32  { return 0 }
 
 var _ = fmt.Errorf
 var _ = sort.Search
@@ -659,7 +734,7 @@ var _ = fmt.Errorf
 var _ = runtime.SetFinalizer
 
 func PyAsyncExcAddr(h uint64) (uint32, error) {
-	var buf []byte
+	buf := pbNewBuf()
 	buf = pbAppendUint64(buf, 1, h)
 	resp, err := invokeMethod(0, 0, buf, wasm2go.Inv_0_0)
 	if err != nil {
@@ -670,7 +745,7 @@ func PyAsyncExcAddr(h uint64) (uint32, error) {
 
 // Destroy the interpreter and finalize the runtime.
 func PyClose(h uint64) error {
-	var buf []byte
+	buf := pbNewBuf()
 	buf = pbAppendUint64(buf, 1, h)
 	_, err := invokeMethod(0, 1, buf, wasm2go.Inv_0_1)
 	return err
@@ -704,7 +779,7 @@ func PyClose(h uint64) error {
 // only one response value to Go; bundling the outputs keeps one round-trip
 // and one atomic result. The Go wrapper unmarshals it.
 func PyEval(h uint64, src string) (string, error) {
-	var buf []byte
+	buf := pbNewBuf()
 	buf = pbAppendUint64(buf, 1, h)
 	buf = pbAppendString(buf, 2, src)
 	resp, err := invokeMethod(0, 2, buf, wasm2go.Inv_0_2)
@@ -733,7 +808,7 @@ func PyEval(h uint64, src string) (string, error) {
 // <
 // 3).
 func PyEvalBreakerAddr(h uint64) (uint32, error) {
-	var buf []byte
+	buf := pbNewBuf()
 	buf = pbAppendUint64(buf, 1, h)
 	resp, err := invokeMethod(0, 3, buf, wasm2go.Inv_0_3)
 	if err != nil {
@@ -743,7 +818,7 @@ func PyEvalBreakerAddr(h uint64) (uint32, error) {
 }
 
 func PyKeyboardInterruptObj(h uint64) (uint32, error) {
-	var buf []byte
+	buf := pbNewBuf()
 	buf = pbAppendUint64(buf, 1, h)
 	resp, err := invokeMethod(0, 4, buf, wasm2go.Inv_0_4)
 	if err != nil {
@@ -762,7 +837,7 @@ func PyKeyboardInterruptObj(h uint64) (uint32, error) {
 // mount). Pass NULL/empty to fall back to CPython's default path discovery
 // (usually fails in the sandbox — provide the path).
 func PyNew(stdlibDir string) (uint64, error) {
-	var buf []byte
+	buf := pbNewBuf()
 	buf = pbAppendString(buf, 1, stdlibDir)
 	resp, err := invokeMethod(0, 5, buf, wasm2go.Inv_0_5)
 	if err != nil {
