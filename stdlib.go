@@ -4,10 +4,11 @@ package python
 //
 // stdlib.zip is a trimmed CPython Lib/ tree (no test suites, idlelib, tkinter,
 // distutils, ...) embedded into this module so an embedding application does
-// not have to ship the Lib/ directory alongside its binary. ExtractStdlib
-// unpacks it once per process into a temp directory and returns that path,
-// suitable for Config.StdlibDir. NewInstance uses it automatically when
-// Config.StdlibDir is empty.
+// not have to ship the Lib/ directory alongside its binary. The library
+// default serves it from memory (NewStdlibMemFS, what a nil Config.FS gets);
+// ExtractStdlib is the host-filesystem alternative: it unpacks the tree once
+// per process into a temp directory and returns that path, suitable for
+// Config.StdlibDir when Config.FS is a host backend (fs.NewHostFS).
 
 import (
 	"archive/zip"

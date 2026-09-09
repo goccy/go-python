@@ -13,6 +13,7 @@
 package pybench
 
 import (
+	"context"
 	"runtime"
 	"testing"
 
@@ -39,21 +40,21 @@ for i in range(200000):
 
 // ---- go-python (wasm2go CPython) -----------------------------------------
 
-func goPythonInterp(tb testing.TB) *python.Interpreter {
+func goPythonInterp(tb testing.TB) *python.Python {
 	tb.Helper()
-	interp, err := python.NewInterpreter(python.Config{})
+	interp, err := python.New(python.Config{})
 	if err != nil {
-		tb.Fatalf("NewInterpreter: %v", err)
+		tb.Fatalf("New: %v", err)
 	}
 	return interp
 }
 
-func goPythonEval(tb testing.TB, interp *python.Interpreter, src string) {
-	r, err := interp.Eval(src)
+func goPythonEval(tb testing.TB, interp *python.Python, src string) {
+	r, err := interp.Eval(context.Background(), src)
 	if err != nil {
 		tb.Fatalf("eval host error: %v", err)
 	}
-	if !r.Ok {
+	if r.Error != nil {
 		tb.Fatalf("eval python error: %s", r.Error)
 	}
 }
