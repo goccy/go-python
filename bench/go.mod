@@ -7,6 +7,6 @@ require (
 	github.com/goccy/go-python v0.0.0
 )
 
-require github.com/goccy/pythonwasm2go v0.1.0 // indirect
+require github.com/goccy/pythonwasm2go v0.4.0 // indirect
 
 replace github.com/goccy/go-python => ..

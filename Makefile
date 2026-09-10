@@ -1,17 +1,18 @@
 PYTHON_WASM_REPO     ?= goccy/python-wasm
-PYTHON_WASM_VERSION  ?= v0.1.2
+PYTHON_WASM_VERSION  ?= v0.3.0
 # python-wasm emits its release attestations from release.yml (the v* tag
 # workflow), NOT build.yml — releasing lives only in release.yml there.
 PYTHON_WASM_WORKFLOW ?= goccy/python-wasm/.github/workflows/release.yml
 
 # Files pulled from the python-wasm release and verified against its SLSA
-# attestation: the wasm2go bridge and the embeddable stdlib zip. Asset name on
-# the left, in-tree filename on the right (the rename is cosmetic; gh
-# attestation verify matches by content digest).
+# attestation: the wasm2go bridge (the generated service binding, vendored as
+# the internal package under the hand-written public API) and the embeddable
+# stdlib zip. Asset name on the left, in-tree filename on the right (the
+# rename is cosmetic; gh attestation verify matches by content digest).
 BRIDGE_ASSET := python_wasm2go.go
-BRIDGE_FILE  := python.go
+BRIDGE_FILE  := internal/python.go
 STDLIB_ASSET := python_stdlib.zip
-STDLIB_FILE  := stdlib.zip
+STDLIB_FILE  := fs/stdlib.zip
 RELEASE_URL       = https://github.com/$(PYTHON_WASM_REPO)/releases/download/$(PYTHON_WASM_VERSION)
 ATTESTATION_API   = https://api.github.com/repos/$(PYTHON_WASM_REPO)/attestations
 

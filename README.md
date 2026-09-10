@@ -14,7 +14,8 @@ execution time.
 
 The package is built for embedding Python safely. A host application can create
 isolated interpreters, decide exactly what each interpreter can see or touch,
-and run agent-generated Python with explicit controls over filesystem,
+call Python from Go and Go from Python with typed values and live object
+handles, and run agent-generated Python with explicit controls over filesystem,
 environment, stdio, networking, subprocesses, memory, and cancellation.
 
 ## Why this library
@@ -39,36 +40,39 @@ before the guest reaches host resources.
   then transpiled to Go by
   [`goccy/pythonwasm2go`](https://github.com/goccy/pythonwasm2go). Applications
   import a Go module and build with the Go toolchain.
-- **Real CPython with an embedded standard library.** `stdlib.zip` contains a
+- **Real CPython with an embedded standard library.** `fs/stdlib.zip` contains a
   trimmed CPython `Lib/` tree and is embedded in the module. A zero-value
-  `Config` automatically extracts it for local execution, while
-  `NewStdlibMemFS` serves it from an in-memory filesystem for fully isolated
-  embeddings.
-- **Auto-generated end-to-end.** The checked-in bridge (`python.go`) and
-  embedded standard library (`stdlib.zip`) are pulled from
+  `Config` serves it from a private in-memory filesystem, so a library embedding
+  never touches the host disk.
+- **A typed Go <-> Python bridge.** Values cross the boundary typed, following
+  Python's own data model: immutable built-ins by value, every other object as
+  an identity-preserving handle. Call Python functions and methods from Go with
+  positional and keyword arguments; expose Go functions to Python as ordinary
+  builtin functions. Nothing is stringified in transit.
+- **Auto-generated end-to-end.** The generated bridge (`internal/python.go`) and
+  embedded standard library (`fs/stdlib.zip`) are pulled from
   [`goccy/python-wasm`](https://github.com/goccy/python-wasm). Updating the
   upstream release refreshes the generated CPython binding without hand-writing
   the runtime surface.
 - **End-to-end provenance.** Upstream-sourced artifacts are protected by
   [GitHub artifact attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations).
-  `make verify` checks the signed release provenance for both `python.go` and
-  `stdlib.zip`, and CI runs the same verification before tests.
-- **Isolated multi-interpreter API.** Each `Interpreter` owns its own wasm
-  module, linear memory, WASI host, and CPython runtime. Interpreters can run
-  concurrently with independent globals and filesystem state.
-- **Agent-oriented sandbox controls.** The host can control:
-  - filesystem scope with `PreopenDir`;
-  - private filesystem backends with `FS`, including in-memory `MemFS`;
-  - per-path read/write decisions with `FSAccess`;
+  `make verify` checks the signed release provenance for both the bridge and
+  `fs/stdlib.zip`, and CI runs the same verification before tests.
+- **Isolated multi-instance API.** Each `Python` owns its own wasm module,
+  linear memory, WASI host, and CPython runtime. Instances run concurrently
+  with independent globals and filesystem state.
+- **Sandboxed by default.** The zero `Config` denies every capability; each one
+  is granted explicitly:
+  - filesystem backends with `FS` — a private in-memory `MemFS` (the default),
+    `fs.NewHostFS()`, `fs.DirFS(dir)`, or your own;
   - guest environment variables with `Env` (host `os.Environ` is not leaked);
   - guest `stdin`, `stdout`, and `stderr` with explicit `io.Reader` /
     `io.Writer` values;
   - hostname resolution with `Resolve`;
   - outbound connect destinations with `Dial`;
-  - socket accept/recv/send operations with `NetAccess`;
   - host subprocess execution with `Exec`;
   - wasm linear-memory growth with `MaxMemoryBytes`;
-  - long-running Python code with `Interrupt` / `PrepareInterrupt`.
+  - long-running Python code with `context` cancellation.
 - **Python command front-end.** `cmd/python` and package `cli` provide a
   Python-like command entry point for `python -c <command>` and
   `python <file.py> [args...]`.
@@ -78,15 +82,17 @@ before the guest reaches host resources.
 
 ## Status
 
-The checked-in upstream artifacts currently track
-[`goccy/python-wasm`](https://github.com/goccy/python-wasm) `v0.1.5`
-(vendored as [`goccy/pythonwasm2go`](https://github.com/goccy/pythonwasm2go)
-`v0.2.0`), which builds CPython 3.14.6.
+The checked-in upstream artifacts track
+[`goccy/python-wasm`](https://github.com/goccy/python-wasm) (vendored as
+[`goccy/pythonwasm2go`](https://github.com/goccy/pythonwasm2go)), which builds
+CPython 3.14.6.
 
-The main API supports expression / statement evaluation, persistent globals per
-interpreter, standard-library imports, stdout/stderr capture, isolated
-interpreter instances, in-memory filesystems, filesystem/network/subprocess
-policy hooks, memory caps, and host-triggered `KeyboardInterrupt`.
+The main API supports expression / statement evaluation with persistent
+`__main__` globals per instance, running script files, standard-library
+imports, stdout/stderr capture, typed values and live object handles in both
+directions, Go functions callable from Python, isolated instances, in-memory
+filesystems, filesystem/network/subprocess policy hooks, memory caps, and
+context cancellation.
 
 The command front-end currently supports `-c` and script-file execution.
 Interactive REPL mode and `python -m` are not implemented yet.
@@ -107,86 +113,168 @@ go get github.com/goccy/go-python
 package main
 
 import (
+	"context"
 	"fmt"
 
 	python "github.com/goccy/go-python"
 )
 
 func main() {
-	interp, err := python.NewInterpreter(python.Config{})
+	p, err := python.New(python.Config{})
 	if err != nil {
 		panic(err)
 	}
-	defer interp.Close()
+	defer p.Close()
 
-	res, err := interp.Eval(`
+	res, err := p.Eval(context.Background(), `
 import json, math
 print(json.dumps({"sqrt2": round(math.sqrt(2), 6)}))
 `)
 	if err != nil {
-		panic(err)
+		panic(err) // a host/transport failure, not a Python exception
 	}
-	if !res.Ok {
-		panic(res.Error)
+	if res.Error != nil {
+		panic(res.Error) // *python.PythonError: the uncaught exception
 	}
 	fmt.Print(res.Stdout)
 }
 ```
 
-### Run agent-generated code in a tighter sandbox
+`Result.Value` is the value of the source's last expression statement (the
+REPL's "value of the last line"), `Result.Error` an uncaught exception as a
+`*PythonError` (type, message, traceback, and the live exception instance),
+`Result.Stdout` / `Result.Stderr` what the code printed.
 
-The zero-value `Config` is convenient for local execution, but it is not a
-deny-all sandbox: the host filesystem is visible unless scoped, and networking
-or subprocess execution must be denied with hooks when running untrusted code.
-For agent-generated code, pass an explicit policy.
+### Calling between Go and Python
 
 ```go
-fsys, err := python.NewStdlibMemFS()
-if err != nil {
-	panic(err)
-}
+p, _ := python.New(python.Config{})
+defer p.Close()
+ctx := context.Background()
 
-interp, err := python.NewInterpreter(python.Config{
-	FS:             fsys, // private in-memory filesystem; StdlibDir defaults to "/"
+// Go -> Python: define a function, fetch it as a first-class value, call it.
+// Arguments and results are typed Values; Kwarg passes keyword arguments.
+p.Eval(ctx, "def add(a, b=0):\n    return a + b")
+r, _ := p.Eval(ctx, "add")
+add, _ := python.As[python.FunctionValue](r.Value)
+sum, _ := add.Call(ctx, python.ValueOf(40), python.Kwarg("b", python.ValueOf(2)))
+n, _ := python.As[python.IntValue](sum)
+v, _ := n.Int64()
+fmt.Println(v) // 42
+
+// Python objects cross as handles, not copies: the same object, its methods,
+// and its state remain live on the Go side.
+p.Eval(ctx, "class Counter:\n    def __init__(self): self.n = 0\n    def inc(self): self.n += 1\nc = Counter()")
+r, _ = p.Eval(ctx, "c")
+obj, _ := python.As[python.ObjectValue](r.Value) // TypeName() == "__main__.Counter"
+obj.CallMethod(ctx, "inc")                       // mutates the object Python sees
+again, _ := p.Eval(ctx, "c")
+fmt.Println(obj.Equal(again.Value.(python.ObjectValue))) // true: same object
+
+// Modules and containers are typed handles too.
+js, _ := p.Import(ctx, "json")
+d, _ := p.NewDict(ctx, python.DictItem{Key: python.ValueOf("a"), Value: python.ValueOf(1)})
+s, _ := js.CallMethod(ctx, "dumps", d, python.Kwarg("sort_keys", python.ValueOf(true)))
+fmt.Println(s.(python.StrValue).String()) // {"a": 1}
+
+// Python -> Go: expose a Go function as a Python builtin function.
+p.Bind("go_upper", func(args []python.Value, kwargs map[string]python.Value) (python.Value, error) {
+	s, err := python.As[python.StrValue](args[0])
+	if err != nil {
+		return nil, err
+	}
+	return python.ValueOf(strings.ToUpper(s.String())), nil
+})
+r, _ = p.Eval(ctx, `go_upper("hello")`)
+fmt.Println(r.Value.(python.StrValue).String()) // HELLO
+```
+
+Every value crosses the boundary typed, following Python's own data model.
+A `Value` is one of the sealed concrete types: `NoneValue`, `BoolValue`,
+`IntValue` (arbitrary precision — `Int64()` or `BigInt()`), `FloatValue`,
+`ComplexValue`, `StrValue`, `BytesValue` cross by value; `ListValue`,
+`TupleValue`, `DictValue`, `SetValue`, `FrozenSetValue`, `FunctionValue`,
+`ClassValue`, `ModuleValue`, and every other object (an instance, an
+exception, a generator, ...) cross as identity-preserving handles that all
+implement the `ObjectValue` interface — Python's object protocol: `Attr` /
+`SetAttr`, `Item` / `SetItem` / `DelItem`, `Len`, `Contains`, `Call` /
+`CallMethod`, `Str` / `Repr`, `IsInstance`. Inspect a value with a Go type
+switch (concrete cases first, `ObjectValue` last) or with `python.As[T]` when
+the expected type is known; `Kind()` reports the runtime kind.
+
+Only exact instances of the immutable built-ins cross by value: an `IntEnum`
+member or a `str` subclass instance keeps its identity and attributes and
+arrives as an object handle. Container subclasses get the container's typed
+handle (an `OrderedDict` is a `DictValue` whose `TypeName()` says
+`collections.OrderedDict`). Handles hold the object alive in the interpreter
+until the Go value is garbage collected or the instance is closed. A Go
+function receives its arguments the same way, returns one `Value` (nil is
+`None`), and raises in Python by returning an error: a `*PythonError` re-raises
+that exact exception instance, any other error becomes a `RuntimeError`.
+
+### Run agent-generated code in a tighter sandbox
+
+The zero-value `Config` is already a deny-all sandbox: a private in-memory
+filesystem pre-loaded with the standard library, an empty environment, no
+host stdio, and no networking or subprocess access. Grant only what the code
+needs:
+
+```go
+p, err := python.New(python.Config{
 	Env:            []string{"APP_MODE=agent"},
 	MaxMemoryBytes: 64 << 20,
-	NetAccess:      func(op string) bool { return false },
-	Resolve:        func(host string) bool { return false },
-	Dial:           func(network, ip string, port int) bool { return false },
-	Exec:           func(path string, argv []string) bool { return false },
+	Resolve:        func(host string) bool { return host == "api.example.com" },
+	Dial: func(network, host, ip string, port int) bool {
+		return host == "api.example.com" && port == 443
+	},
 })
 if err != nil {
 	panic(err)
 }
-defer interp.Close()
+defer p.Close()
 
-res, err := interp.Eval("sum(range(101))")
+res, err := p.Eval(context.Background(), "sum(range(101))")
 if err != nil {
 	panic(err)
 }
-if !res.Ok {
+if res.Error != nil {
 	panic(res.Error)
 }
-fmt.Println(res.Repr) // 5050
+n, _ := python.As[python.IntValue](res.Value)
+fmt.Println(n.BigInt()) // 5050
 ```
+
+To give the interpreter files of your own, build the filesystem first:
+`fs.NewStdlibMemFS()` returns the default in-memory filesystem to add to,
+and the [`fs`](fs) package provides `fs.NewHostFS()` (the host filesystem, how
+the `python` command runs) and `fs.DirFS(dir)` (the host filesystem scoped to
+one directory). With a host backend, point `StdlibDir` at the directory
+`fs.ExtractStdlib()` returns.
 
 ### Interrupt a long-running evaluation
 
+Cancel the context. The interpreter is stopped at the next bytecode boundary
+by a host-side memory write (CPython's own eval-breaker mechanism, no wasm code
+executed on the busy instance) and the call returns `ctx.Err()`.
+
 ```go
-interrupt, err := interp.PrepareInterrupt()
-if err != nil {
-	panic(err)
-}
-
-done := make(chan python.EvalResult, 1)
-go func() {
-	res, _ := interp.Eval("while True:\n    pass")
-	done <- res
-}()
-
-time.AfterFunc(time.Second, interrupt.Fire)
-res := <-done // res.Ok == false, res.Error contains KeyboardInterrupt
+ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+defer cancel()
+_, err := p.Eval(ctx, "while True:\n    pass")
+fmt.Println(errors.Is(err, context.DeadlineExceeded)) // true; p stays usable
 ```
+
+### Run a script file
+
+```go
+err := p.RunFile(ctx, "/app/main.py", []string{"arg1"}) // as __main__, sys.argv set
+if code, ok := python.ExitCode(err); ok {
+	os.Exit(code) // the script called sys.exit()
+}
+```
+
+`RunFile` streams output to `Config.Stdout` / `Config.Stderr` rather than
+capturing it, and `AddPath` prepends directories to `sys.path`.
 
 ### Use the command front-end
 
@@ -207,7 +295,7 @@ make verify
 
 The target:
 
-1. computes the SHA-256 digest of `python.go` and `stdlib.zip`;
+1. computes the SHA-256 digest of `internal/python.go` and `fs/stdlib.zip`;
 2. fetches the public attestation bundle for each digest from the GitHub
    attestations API;
 3. runs `gh attestation verify --bundle` with
@@ -252,9 +340,9 @@ and runs tight loops faster.
 ## License
 
 - **The Go source code of this repository is licensed under [MIT](./LICENSE).**
-  That covers everything written or generated here — `interpreter.go`, the
-  generated bridge `python.go`, the CLI, the tests and the benchmarks.
-- **`stdlib.zip` is not MIT**: it is a repackaged subset of the CPython 3.14.6
+  That covers everything written or generated here — the public API, the
+  generated bridge `internal/python.go`, the CLI, the tests and the benchmarks.
+- **`fs/stdlib.zip` is not MIT**: it is a repackaged subset of the CPython 3.14.6
   standard library — a derivative work of
   [CPython](https://github.com/python/cpython) — and keeps CPython's own
   license, the Python Software Foundation License Agreement
@@ -272,7 +360,7 @@ and runs tight loops faster.
   needs to accompany it. Your users receive go-python and pythonwasm2go from
   their own origins, under their own licenses.
 - **Shipping a compiled binary**: the binary embeds the transpiled interpreter
-  and `stdlib.zip`. The PSF License Agreement is permissive and expressly allows
+  and `fs/stdlib.zip`. The PSF License Agreement is permissive and expressly allows
   this — it grants the right to "reproduce, analyze, test, perform and/or
   display publicly, prepare derivative works, distribute, and otherwise use
   Python ... in any derivative version" (§2), including in commercial and

@@ -16,17 +16,17 @@ path (build constraint `(!amd64 && !arm64) || purego`, bounds-checked slice
 access) rather than the `amd64`/`arm64` assembly path. No extra flags are
 needed.
 
-## Use the in-memory stdlib FS (important)
+## Use the in-memory stdlib FS (the library default)
 
 There is one catch for the wasm target: how the interpreter gets at the
 standard library.
 
-By default (`cmd/python`) the interpreter extracts the embedded stdlib to a
-host temporary directory (`ExtractStdlib`). Under a **nested** WASI setup —
-the inner CPython's file ops go through `WasiStubs` → Go `os.*` → Go's
-`wasip1` runtime → the outer WASI runtime → the host filesystem — that
-extraction *writes* fine but CPython's `getpath` fails when it tries to
-*read* the tree back:
+The `python` command (`cmd/python`) runs on the host filesystem and extracts
+the embedded stdlib to a host temporary directory (`ExtractStdlib`). Under a
+**nested** WASI setup — the inner CPython's file ops go through `WasiStubs` →
+Go `os.*` → Go's `wasip1` runtime → the outer WASI runtime → the host
+filesystem — that extraction *writes* fine but CPython's `getpath` fails when
+it tries to *read* the tree back:
 
 ```
 OSError: [Errno 8] Bad file descriptor
@@ -37,15 +37,17 @@ OSError: [Errno 8] Bad file descriptor
 `wasip1` runtime and the outer WASI host; it is not specific to any one
 runtime.)
 
-The robust approach for the wasm target is the **in-memory stdlib FS**
-(`NewStdlibMemFS`). The standard library then lives entirely in Go memory and
-no real WASI filesystem is touched for stdlib access, so the nested-FS problem
-disappears. This is also the right pattern for sandboxed embedding in general.
+The robust approach for the wasm target is the **in-memory stdlib FS**, which
+is what the library's zero `Config` uses: the standard library then lives
+entirely in Go memory and no real WASI filesystem is touched for stdlib
+access, so the nested-FS problem disappears. This is also the right pattern
+for sandboxed embedding in general.
 
 ```go
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -53,23 +55,19 @@ import (
 )
 
 func main() {
-	memfs, err := python.NewStdlibMemFS()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "memfs:", err)
-		os.Exit(1)
-	}
-	interp, err := python.NewInterpreter(python.Config{
-		FS:     memfs, // stdlib served from memory; StdlibDir defaults to "/"
+	p, err := python.New(python.Config{
+		// FS is nil: a private in-memory filesystem pre-loaded with the
+		// stdlib, StdlibDir "/".
 		Stdout: os.Stdout,
 		Stderr: os.Stderr,
 	})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "new interpreter:", err)
+		fmt.Fprintln(os.Stderr, "new:", err)
 		os.Exit(1)
 	}
-	defer interp.Close()
+	defer p.Close()
 
-	res, err := interp.Eval(`
+	res, err := p.Eval(context.Background(), `
 import sys, math, json
 print("1+1 =", 1 + 1)
 print("sqrt(2) =", round(math.sqrt(2), 6))
@@ -81,7 +79,7 @@ print("sys.version:", sys.version.split()[0])
 		os.Exit(1)
 	}
 	fmt.Print(res.Stdout)
-	if !res.Ok {
+	if res.Error != nil {
 		fmt.Fprintln(os.Stderr, res.Error)
 		os.Exit(1)
 	}
