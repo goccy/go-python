@@ -82,10 +82,10 @@ before the guest reaches host resources.
 
 ## Status
 
-The checked-in upstream artifacts track
-[`goccy/python-wasm`](https://github.com/goccy/python-wasm) (vendored as
-[`goccy/pythonwasm2go`](https://github.com/goccy/pythonwasm2go)), which builds
-CPython 3.14.6.
+The checked-in upstream artifacts currently track
+[`goccy/python-wasm`](https://github.com/goccy/python-wasm) `v0.3.0`
+(vendored as [`goccy/pythonwasm2go`](https://github.com/goccy/pythonwasm2go)
+`v0.4.0`), which builds CPython 3.14.6 with the wasmify `v0.6.17` toolchain.
 
 The main API supports expression / statement evaluation with persistent
 `__main__` globals per instance, running script files, standard-library
@@ -322,20 +322,25 @@ go test -run TestMemoryFootprint -v ./...
 ```
 
 The `bench/` module runs identical Python source on go-python (real CPython
-3.14.6) and on [`gpython`](https://github.com/go-python/gpython) (a pure-Go
-Python 3.4 VM), so the two are measured on equal footing (`benchstat` `sec/op`,
-darwin/amd64, n=10):
+3.14.6, python-wasm `v0.3.0`) and on
+[`gpython`](https://github.com/go-python/gpython) (a pure-Go Python 3.4 VM), so
+the two are measured on equal footing (`benchstat` `sec/op`, n=10, Go
+darwin/amd64 on an Apple M5):
 
 | workload | go-python | gpython |
 | --- | ---: | ---: |
-| `fib(28)` (recursive calls) | 122.8 ms | 217.8 ms |
-| `sum(range(200000))` (loop) | 54.1 ms | 17.1 ms |
-| interpreter startup | 13.2 ms | 16 µs |
+| `fib(28)` (recursive calls) | 47.1 ms | 204.0 ms |
+| `sum(range(200000))` (loop) | 17.3 ms | 16.7 ms |
+| interpreter startup (`New` + `Close`) | 10.5 ms | 12.6 µs |
 
 The two make different trade-offs: go-python runs a real CPython engine, so it
-is faster on call-heavy code and keeps per-call allocation tiny (≈0.5 KB/op vs
-gpython's hundreds of MB for `fib`), while gpython's lightweight VM starts up
-and runs tight loops faster.
+is faster on call-heavy code and keeps per-call allocation tiny (96 B and 5
+allocations per `fib(28)` run, against gpython's 440 MiB and 5.1 M
+allocations), and its tight loops now run at parity; gpython's lightweight VM
+starts up in microseconds. Startup here is the zero `Config`: the in-memory
+standard library is inflated once per process and each instance is populated
+from that cache, then CPython boots. One live instance holds about 52 MiB of
+Go heap (the wasm linear memory plus its private stdlib filesystem).
 
 ## License
 

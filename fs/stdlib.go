@@ -37,33 +37,74 @@ var stdlibZip []byte
 // Each call returns an independent FS, so instances built from separate
 // NewStdlibMemFS() values share no filesystem state.
 func NewStdlibMemFS() (*MemFS, error) {
-	zr, err := zip.NewReader(bytes.NewReader(stdlibZip), int64(len(stdlibZip)))
+	entries, err := loadStdlibEntries()
 	if err != nil {
-		return nil, fmt.Errorf("open embedded stdlib: %w", err)
+		return nil, err
 	}
 	fsys := NewMemFS()
-	for _, f := range zr.File {
-		if f.FileInfo().IsDir() {
-			if err := fsys.MkdirAll(f.Name, 0o755); err != nil {
+	for _, e := range entries {
+		if e.dir {
+			if err := fsys.MkdirAll(e.name, 0o755); err != nil {
 				return nil, err
 			}
 			continue
 		}
-		rc, err := f.Open()
-		if err != nil {
-			return nil, err
-		}
-		var buf bytes.Buffer
-		if _, err := buf.ReadFrom(rc); err != nil {
-			rc.Close()
-			return nil, err
-		}
-		rc.Close()
-		if err := fsys.WriteFile(f.Name, buf.Bytes(), 0o644); err != nil {
+		// WriteFile copies the bytes, so every MemFS owns its files and the
+		// shared decompressed cache is never written through.
+		if err := fsys.WriteFile(e.name, e.data, 0o644); err != nil {
 			return nil, err
 		}
 	}
 	return fsys, nil
+}
+
+// stdlibEntry is one decompressed member of stdlib.zip.
+type stdlibEntry struct {
+	name string
+	dir  bool
+	data []byte
+}
+
+var (
+	stdlibEntriesOnce sync.Once
+	stdlibEntries     []stdlibEntry
+	stdlibEntriesErr  error
+)
+
+// loadStdlibEntries inflates stdlib.zip once per process. Every instance
+// built on the default filesystem needs the whole tree, and inflating it per
+// instance dominated New (tens of milliseconds); populating a MemFS from the
+// cached bytes is a fraction of that.
+func loadStdlibEntries() ([]stdlibEntry, error) {
+	stdlibEntriesOnce.Do(func() {
+		zr, err := zip.NewReader(bytes.NewReader(stdlibZip), int64(len(stdlibZip)))
+		if err != nil {
+			stdlibEntriesErr = fmt.Errorf("open embedded stdlib: %w", err)
+			return
+		}
+		entries := make([]stdlibEntry, 0, len(zr.File))
+		for _, f := range zr.File {
+			if f.FileInfo().IsDir() {
+				entries = append(entries, stdlibEntry{name: f.Name, dir: true})
+				continue
+			}
+			rc, err := f.Open()
+			if err != nil {
+				stdlibEntriesErr = err
+				return
+			}
+			var buf bytes.Buffer
+			if _, err := buf.ReadFrom(rc); err != nil {
+				rc.Close()
+				stdlibEntriesErr = err
+				return
+			}
+			rc.Close()
+			entries = append(entries, stdlibEntry{name: f.Name, data: buf.Bytes()})
+		}
+		stdlibEntries = entries
+	})
+	return stdlibEntries, stdlibEntriesErr
 }
 
 var (
