@@ -135,9 +135,18 @@ func TestNormalAndStdlib(t *testing.T) {
 		t.Errorf("persistent acc = %q, want 5", got)
 	}
 
-	mustEval(t, p, "import math, base64, hashlib, json, re, collections, textwrap, functools, datetime")
+	mustEval(t, p, "import math, base64, hashlib, json, re, collections, textwrap, functools, datetime, decimal")
 	cases := []struct{ src, want string }{
 		{"round(math.factorial(10))", "3628800"},
+		// decimal and hashlib are backed by C code that lives in objects
+		// with colliding basenames across CPython's source tree
+		// (libmpdec/context.o vs Python/context.o, _hacl/*). A build that
+		// links the wrong member turns their functions into host stubs, and
+		// the modules degrade silently (prec 0, InvalidOperation) rather than
+		// failing to import — so pin the arithmetic itself.
+		{"str(decimal.Decimal('1.1') + decimal.Decimal('2.2'))", "'3.3'"},
+		{"decimal.getcontext().prec", "28"},
+		{"hashlib.md5(b'x').hexdigest()[:6]", "'9dd4e4'"},
 		{"base64.b64encode(b'hi').decode()", "'aGk='"},
 		{"hashlib.sha256(b'abc').hexdigest()[:8]", "'ba7816bf'"},
 		{"json.dumps({'b':2,'a':1}, sort_keys=True)", `'{"a": 1, "b": 2}'`},
