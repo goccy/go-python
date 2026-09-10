@@ -1,14 +1,14 @@
-package python
+package fs
 
 // Self-contained Python standard library.
 //
 // stdlib.zip is a trimmed CPython Lib/ tree (no test suites, idlelib, tkinter,
 // distutils, ...) embedded into this module so an embedding application does
 // not have to ship the Lib/ directory alongside its binary. The library
-// default serves it from memory (NewStdlibMemFS, what a nil Config.FS gets);
-// ExtractStdlib is the host-filesystem alternative: it unpacks the tree once
-// per process into a temp directory and returns that path, suitable for
-// Config.StdlibDir when Config.FS is a host backend (fs.NewHostFS).
+// default serves it from memory (NewStdlibMemFS, what a nil python.Config.FS
+// gets); ExtractStdlib is the host-filesystem alternative: it unpacks the tree
+// once per process into a temp directory and returns that path, suitable for
+// python.Config.StdlibDir when the FS is a host backend (NewHostFS).
 
 import (
 	"archive/zip"
@@ -20,32 +20,17 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-
-	gopythonfs "github.com/goccy/go-python/fs"
 )
 
 //go:embed stdlib.zip
 var stdlibZip []byte
 
-// FS is the read/write filesystem backend a Python instance is given via
-// Config.FS. The go-python/fs package provides the backends (NewMemFS,
-// NewHostFS, DirFS); the alias keeps the common case — the default
-// in-memory stdlib filesystem below — to this one import.
-type FS = gopythonfs.FS
-
-// File is an open file returned by FS.OpenFile.
-type File = gopythonfs.File
-
-// MemFS is an in-memory read/write FS. Separate MemFS values are fully
-// isolated from one another.
-type MemFS = gopythonfs.MemFS
-
 // NewStdlibMemFS returns an in-memory filesystem pre-loaded with the embedded
 // Python standard library at the root, ready to back a Python instance. It is
-// what a nil Config.FS defaults to; build one explicitly to add files of your
-// own before New:
+// what a nil python.Config.FS defaults to; build one explicitly to add files
+// of your own before python.New:
 //
-//	fsys, _ := python.NewStdlibMemFS()
+//	fsys, _ := fs.NewStdlibMemFS()
 //	fsys.WriteFile("app.py", src, 0o644)
 //	p, _ := python.New(python.Config{FS: fsys}) // StdlibDir defaults to "/"
 //
@@ -56,7 +41,7 @@ func NewStdlibMemFS() (*MemFS, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open embedded stdlib: %w", err)
 	}
-	fsys := gopythonfs.NewMemFS()
+	fsys := NewMemFS()
 	for _, f := range zr.File {
 		if f.FileInfo().IsDir() {
 			if err := fsys.MkdirAll(f.Name, 0o755); err != nil {
@@ -89,8 +74,9 @@ var (
 
 // ExtractStdlib unpacks the embedded standard library into a temporary
 // directory (once per process) and returns its path. The result is cached, so
-// repeated calls — e.g. one per Instance — are cheap. The returned directory
-// is the value to pass as Config.StdlibDir.
+// repeated calls — e.g. one per instance — are cheap. With a host backend
+// (NewHostFS) the returned directory is the value to pass as
+// python.Config.StdlibDir.
 func ExtractStdlib() (string, error) {
 	stdlibOnce.Do(func() {
 		stdlibPath, stdlibErr = extractStdlibTo("")
@@ -99,7 +85,7 @@ func ExtractStdlib() (string, error) {
 }
 
 // extractStdlibTo unpacks the embedded zip under parent (os.MkdirTemp default
-// when empty). Exposed separately so tests can target an explicit location.
+// when empty).
 func extractStdlibTo(parent string) (string, error) {
 	dir, err := os.MkdirTemp(parent, "go-python-stdlib-")
 	if err != nil {

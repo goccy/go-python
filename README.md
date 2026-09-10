@@ -40,7 +40,7 @@ before the guest reaches host resources.
   then transpiled to Go by
   [`goccy/pythonwasm2go`](https://github.com/goccy/pythonwasm2go). Applications
   import a Go module and build with the Go toolchain.
-- **Real CPython with an embedded standard library.** `stdlib.zip` contains a
+- **Real CPython with an embedded standard library.** `fs/stdlib.zip` contains a
   trimmed CPython `Lib/` tree and is embedded in the module. A zero-value
   `Config` serves it from a private in-memory filesystem, so a library embedding
   never touches the host disk.
@@ -50,14 +50,14 @@ before the guest reaches host resources.
   positional and keyword arguments; expose Go functions to Python as ordinary
   builtin functions. Nothing is stringified in transit.
 - **Auto-generated end-to-end.** The generated bridge (`internal/python.go`) and
-  embedded standard library (`stdlib.zip`) are pulled from
+  embedded standard library (`fs/stdlib.zip`) are pulled from
   [`goccy/python-wasm`](https://github.com/goccy/python-wasm). Updating the
   upstream release refreshes the generated CPython binding without hand-writing
   the runtime surface.
 - **End-to-end provenance.** Upstream-sourced artifacts are protected by
   [GitHub artifact attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations).
   `make verify` checks the signed release provenance for both the bridge and
-  `stdlib.zip`, and CI runs the same verification before tests.
+  `fs/stdlib.zip`, and CI runs the same verification before tests.
 - **Isolated multi-instance API.** Each `Python` owns its own wasm module,
   linear memory, WASI host, and CPython runtime. Instances run concurrently
   with independent globals and filesystem state.
@@ -245,11 +245,11 @@ fmt.Println(n.BigInt()) // 5050
 ```
 
 To give the interpreter files of your own, build the filesystem first:
-`python.NewStdlibMemFS()` returns the default in-memory filesystem to add to,
+`fs.NewStdlibMemFS()` returns the default in-memory filesystem to add to,
 and the [`fs`](fs) package provides `fs.NewHostFS()` (the host filesystem, how
 the `python` command runs) and `fs.DirFS(dir)` (the host filesystem scoped to
 one directory). With a host backend, point `StdlibDir` at the directory
-`python.ExtractStdlib()` returns.
+`fs.ExtractStdlib()` returns.
 
 ### Interrupt a long-running evaluation
 
@@ -295,7 +295,7 @@ make verify
 
 The target:
 
-1. computes the SHA-256 digest of `internal/python.go` and `stdlib.zip`;
+1. computes the SHA-256 digest of `internal/python.go` and `fs/stdlib.zip`;
 2. fetches the public attestation bundle for each digest from the GitHub
    attestations API;
 3. runs `gh attestation verify --bundle` with
@@ -342,7 +342,7 @@ and runs tight loops faster.
 - **The Go source code of this repository is licensed under [MIT](./LICENSE).**
   That covers everything written or generated here — the public API, the
   generated bridge `internal/python.go`, the CLI, the tests and the benchmarks.
-- **`stdlib.zip` is not MIT**: it is a repackaged subset of the CPython 3.14.6
+- **`fs/stdlib.zip` is not MIT**: it is a repackaged subset of the CPython 3.14.6
   standard library — a derivative work of
   [CPython](https://github.com/python/cpython) — and keeps CPython's own
   license, the Python Software Foundation License Agreement
@@ -360,7 +360,7 @@ and runs tight loops faster.
   needs to accompany it. Your users receive go-python and pythonwasm2go from
   their own origins, under their own licenses.
 - **Shipping a compiled binary**: the binary embeds the transpiled interpreter
-  and `stdlib.zip`. The PSF License Agreement is permissive and expressly allows
+  and `fs/stdlib.zip`. The PSF License Agreement is permissive and expressly allows
   this — it grants the right to "reproduce, analyze, test, perform and/or
   display publicly, prepare derivative works, distribute, and otherwise use
   Python ... in any derivative version" (§2), including in commercial and

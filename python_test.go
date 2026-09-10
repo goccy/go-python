@@ -463,8 +463,9 @@ func TestZeroConfigDeniesCapabilities(t *testing.T) {
 // guest's "/", files inside it are readable and writable, and nothing outside
 // it is reachable.
 func TestDirFSScopesGuestRoot(t *testing.T) {
-	root := t.TempDir()
-	stdlib, err := extractStdlibTo(root)
+	// The extracted stdlib directory doubles as the guest root, so the
+	// interpreter can boot from it with StdlibDir "/".
+	root, err := gopythonfs.ExtractStdlib()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -474,7 +475,7 @@ func TestDirFSScopesGuestRoot(t *testing.T) {
 
 	p := newPy(t, Config{
 		FS:        gopythonfs.DirFS(root),
-		StdlibDir: "/" + filepath.Base(stdlib),
+		StdlibDir: "/",
 	})
 
 	if got := evalRepr(t, p, "open('/ok.txt').read()"); got != "'visible'" {
@@ -628,7 +629,7 @@ func TestPerInstanceFSIsolation(t *testing.T) {
 // filesystem, with sys.argv set and its directory importable, and checks
 // output streams to Config.Stdout rather than being captured.
 func TestRunFileAndAddPath(t *testing.T) {
-	fsys, err := NewStdlibMemFS()
+	fsys, err := gopythonfs.NewStdlibMemFS()
 	if err != nil {
 		t.Fatal(err)
 	}

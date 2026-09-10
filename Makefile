@@ -12,7 +12,7 @@ PYTHON_WASM_WORKFLOW ?= goccy/python-wasm/.github/workflows/release.yml
 BRIDGE_ASSET := python_wasm2go.go
 BRIDGE_FILE  := internal/python.go
 STDLIB_ASSET := python_stdlib.zip
-STDLIB_FILE  := stdlib.zip
+STDLIB_FILE  := fs/stdlib.zip
 RELEASE_URL       = https://github.com/$(PYTHON_WASM_REPO)/releases/download/$(PYTHON_WASM_VERSION)
 ATTESTATION_API   = https://api.github.com/repos/$(PYTHON_WASM_REPO)/attestations
 

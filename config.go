@@ -2,7 +2,11 @@ package python
 
 // Config configures a new Python instance's sandbox.
 
-import "io"
+import (
+	"io"
+
+	"github.com/goccy/go-python/fs"
+)
 
 // Config configures a new Python instance created by New. The zero value is
 // a usable, FULLY SANDBOXED interpreter: a private in-memory filesystem
@@ -14,9 +18,9 @@ type Config struct {
 	// StdlibDir is the path INSIDE the instance's filesystem (Config.FS)
 	// holding the Python standard library (the Lib/ tree); it becomes the
 	// sole module search path via py_new. Empty defaults to "/" — right for
-	// the library default and for NewStdlibMemFS. An instance on the host
+	// the library default and for fs.NewStdlibMemFS. An instance on the host
 	// filesystem (fs.NewHostFS) points this at a host directory, e.g. the
-	// one ExtractStdlib returns.
+	// one fs.ExtractStdlib returns.
 	StdlibDir string
 	// Env is the environment the guest sees (os.environ). nil means an empty
 	// environment — the host process os.Environ() is NOT leaked.
@@ -79,7 +83,7 @@ type Config struct {
 	// implementation.
 	//
 	// When nil, the instance gets a PRIVATE in-memory filesystem pre-loaded
-	// with the standard library (NewStdlibMemFS), so a library embedding
+	// with the standard library (fs.NewStdlibMemFS), so a library embedding
 	// never touches the host disk unless explicitly asked to.
-	FS FS
+	FS fs.FS
 }

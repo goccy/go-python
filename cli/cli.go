@@ -29,7 +29,7 @@ import (
 // and every capability hook allowing — python(1) does not sandbox, so neither
 // does this command (the library's zero Config denies these instead).
 func HostConfig() (python.Config, error) {
-	stdlib, err := python.ExtractStdlib()
+	stdlib, err := fs.ExtractStdlib()
 	if err != nil {
 		return python.Config{}, fmt.Errorf("extract embedded stdlib: %w", err)
 	}
