@@ -1146,6 +1146,11 @@ func PyListAppend(h uint64, obj uint64, elems string, elemsLen uint32) (string, 
 // MUST pass this (the dir is reached through the runtime's WASI filesystem
 // mount). Pass NULL/empty to fall back to CPython's default path discovery
 // (usually fails in the sandbox — provide the path).
+//
+// The isolated config ignores the environment, with one deliberate
+// exception: PYTHONVERBOSE in the guest environment turns on the import
+// trace, and a failed initialisation reports the pending exception on
+// stderr — the way to see why a runtime did not come up.
 func PyNew(stdlibDir string) (uint64, error) {
 	buf := pbNewBuf()
 	buf = pbAppendString(buf, 1, stdlibDir)
