@@ -20,10 +20,66 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	gopythonfs "github.com/goccy/go-python/fs"
 )
 
 //go:embed stdlib.zip
 var stdlibZip []byte
+
+// FS is the read/write filesystem backend a Python instance is given via
+// Config.FS. The go-python/fs package provides the backends (NewMemFS,
+// NewHostFS, DirFS); the alias keeps the common case — the default
+// in-memory stdlib filesystem below — to this one import.
+type FS = gopythonfs.FS
+
+// File is an open file returned by FS.OpenFile.
+type File = gopythonfs.File
+
+// MemFS is an in-memory read/write FS. Separate MemFS values are fully
+// isolated from one another.
+type MemFS = gopythonfs.MemFS
+
+// NewStdlibMemFS returns an in-memory filesystem pre-loaded with the embedded
+// Python standard library at the root, ready to back a Python instance. It is
+// what a nil Config.FS defaults to; build one explicitly to add files of your
+// own before New:
+//
+//	fsys, _ := python.NewStdlibMemFS()
+//	fsys.WriteFile("app.py", src, 0o644)
+//	p, _ := python.New(python.Config{FS: fsys}) // StdlibDir defaults to "/"
+//
+// Each call returns an independent FS, so instances built from separate
+// NewStdlibMemFS() values share no filesystem state.
+func NewStdlibMemFS() (*MemFS, error) {
+	zr, err := zip.NewReader(bytes.NewReader(stdlibZip), int64(len(stdlibZip)))
+	if err != nil {
+		return nil, fmt.Errorf("open embedded stdlib: %w", err)
+	}
+	fsys := gopythonfs.NewMemFS()
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() {
+			if err := fsys.MkdirAll(f.Name, 0o755); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return nil, err
+		}
+		var buf bytes.Buffer
+		if _, err := buf.ReadFrom(rc); err != nil {
+			rc.Close()
+			return nil, err
+		}
+		rc.Close()
+		if err := fsys.WriteFile(f.Name, buf.Bytes(), 0o644); err != nil {
+			return nil, err
+		}
+	}
+	return fsys, nil
+}
 
 var (
 	stdlibOnce sync.Once
