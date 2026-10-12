@@ -30,13 +30,6 @@ type FS = base.FS
 // File is an open file returned by FS.OpenFile.
 type File = base.File
 
-// MemFS is an in-memory read/write FS. Separate MemFS values are fully
-// isolated from one another. Safe for concurrent use.
-type MemFS = base.MemFS
-
-// NewMemFS returns an empty in-memory filesystem.
-func NewMemFS() *MemFS { return base.NewMemFS() }
-
 // NewHostFS returns a pass-through to the operating system's filesystem:
 // the guest sees the host's real root, so absolute paths mean the same
 // thing inside and outside the instance. This is how the python command

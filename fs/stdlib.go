@@ -49,9 +49,10 @@ func NewStdlibMemFS() (*MemFS, error) {
 			}
 			continue
 		}
-		// WriteFile copies the bytes, so every MemFS owns its files and the
-		// shared decompressed cache is never written through.
-		if err := fsys.WriteFile(e.name, e.data, 0o644); err != nil {
+		// Every instance borrows the one decompressed copy: nothing writes
+		// to the cache, and a MemFS copies a file before its first write,
+		// so instances still share no file state.
+		if err := fsys.writeShared(e.name, e.data, 0o644); err != nil {
 			return nil, err
 		}
 	}
@@ -74,7 +75,7 @@ var (
 // loadStdlibEntries inflates stdlib.zip once per process. Every instance
 // built on the default filesystem needs the whole tree, and inflating it per
 // instance dominated New (tens of milliseconds); populating a MemFS from the
-// cached bytes is a fraction of that.
+// cached bytes is a fraction of that, and costs no copy of the file contents.
 func loadStdlibEntries() ([]stdlibEntry, error) {
 	stdlibEntriesOnce.Do(func() {
 		zr, err := zip.NewReader(bytes.NewReader(stdlibZip), int64(len(stdlibZip)))

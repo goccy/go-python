@@ -339,8 +339,12 @@ allocations per `fib(28)` run, against gpython's 440 MiB and 5.1 M
 allocations), and its tight loops now run at parity; gpython's lightweight VM
 starts up in microseconds. Startup here is the zero `Config`: the in-memory
 standard library is inflated once per process and each instance is populated
-from that cache, then CPython boots. One live instance holds about 52 MiB of
-Go heap (the wasm linear memory plus its private stdlib filesystem).
+from that cache, then CPython boots. Instances share that cache's file
+contents and copy a file only when they write to it, so the first live
+instance holds about 42 MiB of Go heap (`TestMemoryFootprint`, which counts
+the shared standard library) and each further instance about 14 MiB, almost
+all of it its wasm linear-memory reservation, of which only about 5 MiB is
+resident after boot.
 
 ## License
 
