@@ -625,14 +625,36 @@ func TestPerInstanceFSIsolation(t *testing.T) {
 	}
 }
 
+// TestDefaultStdlibIsReadOnly checks the default filesystem: the standard
+// library is mounted read-only at fs.StdlibDir and imports from there, while
+// the rest of the filesystem is the instance's own writable MemFS.
+func TestDefaultStdlibIsReadOnly(t *testing.T) {
+	p := newPy(t, Config{})
+	lib := gopythonfs.StdlibDir
+	if got := evalRepr(t, p, "__import__('json').__file__"); got != fmt.Sprintf("'%s/json/__init__.py'", lib) {
+		t.Errorf("json imported from %s", got)
+	}
+	for _, src := range []string{
+		fmt.Sprintf("open(%q, 'a').write('x')", lib+"/os.py"),
+		fmt.Sprintf("open(%q, 'w').write('x')", lib+"/new.py"),
+		fmt.Sprintf("__import__('os').remove(%q)", lib+"/os.py"),
+		fmt.Sprintf("__import__('os').mkdir(%q)", lib+"/__pycache__"),
+	} {
+		if out := pyTry(t, p, src); !strings.HasPrefix(out, "PermissionError") {
+			t.Errorf("%s: %q, want PermissionError", src, out)
+		}
+	}
+	mustEval(t, p, "open('/scratch.txt', 'w').write('ok')")
+	if got := evalRepr(t, p, "open('/scratch.txt').read()"); got != "'ok'" {
+		t.Errorf("read back /scratch.txt = %s", got)
+	}
+}
+
 // TestRunFileAndAddPath runs a script as __main__ from the instance's
 // filesystem, with sys.argv set and its directory importable, and checks
 // output streams to Config.Stdout rather than being captured.
 func TestRunFileAndAddPath(t *testing.T) {
-	fsys, err := gopythonfs.NewStdlibMemFS()
-	if err != nil {
-		t.Fatal(err)
-	}
+	fsys := gopythonfs.NewMemFS()
 	if err := fsys.MkdirAll("app/lib", 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -655,8 +677,12 @@ if __name__ == "__main__":
 		t.Fatal(err)
 	}
 
+	withLib, err := gopythonfs.WithStdlib(fsys)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var out bytes.Buffer
-	p := newPy(t, Config{FS: fsys, Stdout: &out})
+	p := newPy(t, Config{FS: withLib, Stdout: &out})
 	if err := p.AddPath(ctx, "/app/lib"); err != nil {
 		t.Fatal(err)
 	}

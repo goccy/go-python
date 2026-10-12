@@ -51,18 +51,19 @@ func New(cfg Config) (*Python, error) {
 	// Resolve the filesystem and standard library location: every file the
 	// instance opens goes through Config.FS, and StdlibDir is a path inside
 	// it. With a supplied backend the stdlib must live in the FS (host
-	// backends pair with fs.ExtractStdlib; fs.NewStdlibMemFS pre-loads a
-	// MemFS). The nil default is a PRIVATE in-memory filesystem pre-loaded
-	// with the stdlib - sandboxed, nothing touches the host disk.
+	// backends pair with fs.ExtractStdlib; fs.WithStdlib mounts it on a
+	// MemFS). The nil default is a PRIVATE in-memory filesystem with the
+	// shared, read-only stdlib mounted at fs.StdlibDir - sandboxed, nothing
+	// touches the host disk.
 	if cfg.FS == nil {
-		fsys, err := fs.NewStdlibMemFS()
+		fsys, err := fs.WithStdlib(fs.NewMemFS())
 		if err != nil {
 			return nil, fmt.Errorf("build in-memory stdlib: %w", err)
 		}
 		cfg.FS = fsys
 	}
 	if cfg.StdlibDir == "" {
-		cfg.StdlibDir = "/"
+		cfg.StdlibDir = fs.StdlibDir
 	}
 
 	p := &Python{}

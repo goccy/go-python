@@ -42,8 +42,9 @@ before the guest reaches host resources.
   import a Go module and build with the Go toolchain.
 - **Real CPython with an embedded standard library.** `fs/stdlib.zip` contains a
   trimmed CPython `Lib/` tree and is embedded in the module. A zero-value
-  `Config` serves it from a private in-memory filesystem, so a library embedding
-  never touches the host disk.
+  `Config` mounts it read-only at `/usr/lib/python3.14` on a private in-memory
+  filesystem, so a library embedding never touches the host disk, and every
+  instance shares one in-memory copy of the library.
 - **A typed Go <-> Python bridge.** Values cross the boundary typed, following
   Python's own data model: immutable built-ins by value, every other object as
   an identity-preserving handle. Call Python functions and methods from Go with
@@ -215,7 +216,7 @@ that exact exception instance, any other error becomes a `RuntimeError`.
 ### Run agent-generated code in a tighter sandbox
 
 The zero-value `Config` is already a deny-all sandbox: a private in-memory
-filesystem pre-loaded with the standard library, an empty environment, no
+filesystem with the standard library mounted read-only, an empty environment, no
 host stdio, and no networking or subprocess access. Grant only what the code
 needs:
 
@@ -244,9 +245,10 @@ n, _ := python.As[python.IntValue](res.Value)
 fmt.Println(n.BigInt()) // 5050
 ```
 
-To give the interpreter files of your own, build the filesystem first:
-`fs.NewStdlibMemFS()` returns the default in-memory filesystem to add to,
-and the [`fs`](fs) package provides `fs.NewHostFS()` (the host filesystem, how
+To give the interpreter files of your own, build the filesystem first: add
+them to an `fs.NewMemFS()` and pass `fs.WithStdlib(mem)`, which is the default
+filesystem with your files on it (the library itself stays read-only at
+`fs.StdlibDir`). The [`fs`](fs) package also provides `fs.NewHostFS()` (the host filesystem, how
 the `python` command runs) and `fs.DirFS(dir)` (the host filesystem scoped to
 one directory). With a host backend, point `StdlibDir` at the directory
 `fs.ExtractStdlib()` returns.
@@ -338,9 +340,11 @@ is faster on call-heavy code and keeps per-call allocation tiny (96 B and 5
 allocations per `fib(28)` run, against gpython's 440 MiB and 5.1 M
 allocations), and its tight loops now run at parity; gpython's lightweight VM
 starts up in microseconds. Startup here is the zero `Config`: the in-memory
-standard library is inflated once per process and each instance is populated
-from that cache, then CPython boots. One live instance holds about 52 MiB of
-Go heap (the wasm linear memory plus its private stdlib filesystem).
+standard library is inflated once per process and mounted read-only into each
+instance's filesystem, then CPython boots. The first live instance holds about
+24 MiB of Go heap (`TestMemoryFootprint`, which counts the shared standard
+library) and each further instance about 14 MiB, almost all of it its wasm
+linear-memory reservation, of which only about 5 MiB is resident after boot.
 
 ## License
 

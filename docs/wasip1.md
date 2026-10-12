@@ -56,8 +56,8 @@ import (
 
 func main() {
 	p, err := python.New(python.Config{
-		// FS is nil: a private in-memory filesystem pre-loaded with the
-		// stdlib, StdlibDir "/".
+		// FS is nil: a private in-memory filesystem with the stdlib
+		// mounted read-only at fs.StdlibDir.
 		Stdout: os.Stdout,
 		Stderr: os.Stderr,
 	})

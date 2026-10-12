@@ -17,10 +17,10 @@ import (
 type Config struct {
 	// StdlibDir is the path INSIDE the instance's filesystem (Config.FS)
 	// holding the Python standard library (the Lib/ tree); it becomes the
-	// sole module search path via py_new. Empty defaults to "/" — right for
-	// the library default and for fs.NewStdlibMemFS. An instance on the host
-	// filesystem (fs.NewHostFS) points this at a host directory, e.g. the
-	// one fs.ExtractStdlib returns.
+	// sole module search path via py_new. Empty defaults to fs.StdlibDir —
+	// right for the library default and for fs.WithStdlib. An instance on
+	// the host filesystem (fs.NewHostFS) points this at a host directory,
+	// e.g. the one fs.ExtractStdlib returns.
 	StdlibDir string
 	// Env is the environment the guest sees (os.environ). nil means an empty
 	// environment — the host process os.Environ() is NOT leaked.
@@ -82,8 +82,10 @@ type Config struct {
 	// filesystem scoped to one directory), or any other fs.FS
 	// implementation.
 	//
-	// When nil, the instance gets a PRIVATE in-memory filesystem pre-loaded
-	// with the standard library (fs.NewStdlibMemFS), so a library embedding
-	// never touches the host disk unless explicitly asked to.
+	// When nil, the instance gets a PRIVATE in-memory filesystem with the
+	// standard library mounted read-only at fs.StdlibDir
+	// (fs.WithStdlib(fs.NewMemFS())), so a library embedding never touches
+	// the host disk unless explicitly asked to. The library itself is shared
+	// by every such instance.
 	FS fs.FS
 }
